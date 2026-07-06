@@ -1,67 +1,71 @@
-# PACT — Canonical Contract Artifacts
+# PACT — Two-Organisation Foundation
 
-Machine-readable contracts for PACT, generated directly from the PACT
-documentation set. These are the artifacts an engineering team would otherwise
-hand-write first; they are derived strictly from **PACT Engineering Foundations**
-(the source of truth) and the **Product Architecture & Build Specification**, so
-there is a single canonical schema expressed in three forms — no drift.
+This repository contains the foundational development environment for **PACT**, a cross-organisational AI governance platform. It provides a complete, stack-agnostic sandbox demonstrating how PACT securely governs AI agent interactions between two fully isolated enterprises.
 
-## Files
+## The Scenario: M&A Due Diligence
 
-| File | What it is | Source in the docs |
-|------|------------|--------------------|
-| `pact_v1.proto` | Protobuf 3 — the hot-path contract: `ActionContext`, `Decision`, `AuditEntry`, all enums, and the `EnforcementGateway` (`EvaluateAction` / `StreamSession`) and `PolicyEngine` (`EvaluatePolicy`) gRPC services. | Foundations §2 (data contracts), §3 (API surface); Product Spec §5, §20 |
-| `pact_openapi.yaml` | OpenAPI 3.1 — the REST control-plane surface: sessions, policies, audit/compliance, tenants, billing. Includes the §4 error envelope. | Foundations §3, §4; Product Spec §20 |
-| `pact_schema.sql` | PostgreSQL DDL — the control-plane schema (10 entities), with tenant-isolation RLS (I5) and an append-only, hash-chained audit log. | Foundations §2 (entities); Product Spec §10 (Data Model) |
+This sandbox models a real-world, high-value business tension (the 'Tier 1A - Legal' beachhead):
 
-## How they relate to the system
+1. **Meridian Legal LLP (`meridian-legal.ai`)**: An AmLaw 200 M&A law firm representing an acquiring pharma company. Their AI agent (**Harvey**) needs to investigate the target company's clinical trial portfolio. They use a Microsoft enterprise stack (**SQL Server 2022**).
+2. **NovaTrial CRO (`novatrial.io`)**: The target Contract Research Organisation. They hold highly sensitive clinical trial results and proprietary methodologies. Their AI agent (**Atlas**) manages this data. They use an open-source stack (**PostgreSQL 16**).
 
-- **Hot path is gRPC** (`pact_v1.proto`) — `EvaluateAction` is the per-action
-  call the Enforcement Gateway (component 01) serves. The proto *is* the schema
-  referenced by Foundations §3.
-- **Management is REST** (`pact_openapi.yaml`) — session lifecycle (Orchestrator
-  10), policy authoring (12), audit/compliance (08), tenants (09), billing (15).
-- **Control-plane state is Postgres** (`pact_schema.sql`). Note what is **not**
-  here, by design:
-  - Per-session **runtime** state → fast session store (e.g. Redis), not this DB.
-  - Policy **rules / entity data** → live only in enclaves (invariant I1); never
-    persisted in plaintext here.
-  - Memory **content** → the memory backend; only governed *metadata* is stored.
+**The Tension:** Meridian's Harvey agent needs to analyze NovaTrial's data to approve a $500M acquisition. However, NovaTrial cannot expose raw patient data or intellectual property.
 
-## Invariants encoded in the artifacts
+**The Solution:** PACT sits between them. Harvey queries NovaTrial's data, but PACT intercepts the query, normalises it across the different database stacks, and simultaneously evaluates both organisations' Cedar policies. Only actions explicitly allowed by *both* policies (e.g., viewing aggregate trial summaries) are permitted.
 
-- **Fail-closed** (combination notes in `pact_v1.proto`): `final = ALLOW iff every
-  invoked party ALLOWs`; any DENY/error/timeout ⇒ DENY.
-- **Isolation** I1 (policy never leaves the enclave; only `Decision` crosses),
-  I2/I3 (combination is constant-time, symmetric-denial — `policy_rule` is audit
-  only), I5 (tenant-isolation RLS in the DDL), I6 (memory origin metadata).
-- **Audit integrity**: `entry_hash = sha256(prev_hash + canonical(body))`;
-  the `audit_entry` table is append-only (UPDATE/DELETE blocked by trigger) and
-  uniqueness on `(session_id, sequence_no)` gives replay protection.
+## Architecture: Three Isolated Environments
 
-## Validation
-
-All three validate against real tooling:
-- `pact_v1.proto` — compiles with `protoc` (uses well-known types `timestamp`,
-  `struct`).
-- `pact_openapi.yaml` — parses as OpenAPI 3.1; all `$ref`s resolve.
-- `pact_schema.sql` — parses against the PostgreSQL grammar (10 tables, 7 enums,
-  7 RLS policies, append-only audit trigger).
-
-## Source of truth
-
-If a contract changes, change it in **Engineering Foundations** first, then
-regenerate these. The 18 component design documents reference Foundations (they
-never redefine the contracts), so the whole set stays consistent.
-
-## Suggested repo layout
+To prove PACT's zero-trust model, we do not fake isolation. This repository provisions three completely separate environments, with no shared databases, caches, or networks. They communicate only via mTLS to the PACT Gateway.
 
 ```
-proto/pact/v1/pact.proto      <- pact_v1.proto
-api/openapi.yaml              <- pact_openapi.yaml
-db/migrations/0001_init.sql   <- pact_schema.sql
+┌────────────────────────┐         ┌────────────────────────┐
+│  envs/meridian-legal/  │         │  envs/novatrial/       │
+│  ───────────────────── │         │  ──────────────────    │
+│  DB: SQL Server 2022   │         │  DB: PostgreSQL 16     │
+│  Agent: Harvey         │         │  Agent: Atlas          │
+│  Network: meridian-net │         │  Network: novatrial-net│
+│  Ports: 1433, 6380     │         │  Ports: 5434, 6381     │
+└──────────┬─────────────┘         └──────────┬─────────────┘
+           │ mTLS                             │ mTLS
+           └────────────┐   ┌─────────────────┘
+                        ↓   ↓
+           ┌─────────────────────────────────────┐
+           │  envs/pact-platform/                │
+           │  ────────────────────────────────── │
+           │  DB: PostgreSQL 16 (Control Plane)  │
+           │  pgBouncer, Redis, OTel, Prometheus │
+           │  Network: pact-net                  │
+           │  Ports: 5432, 6432, 6379, 50051     │
+           └─────────────────────────────────────┘
 ```
 
-Generate language stubs from the proto (Rust on the hot path; the SDK languages
-— at minimum Python and TypeScript — for client generation) and from the OpenAPI
-spec, per Product Spec §20.3.
+## Heterogeneous Tech Stacks
+
+This sandbox intentionally uses different database technologies:
+- **Meridian Legal:** Microsoft SQL Server 2022 (T-SQL)
+- **NovaTrial CRO:** PostgreSQL 16 (PL/pgSQL)
+
+This proves PACT is **stack-agnostic**. The MCP Protocol Adapter normalises queries from completely different languages into a universal Tool-Call Context before governance is applied.
+
+## Data & Policies
+
+We do not use mock "foo/bar" data. The environments are seeded with production-realistic structures:
+- **Meridian Legal:** Contains M&A deal room documents, a due diligence checklist, and a strictly internal 'privilege log' that their Cedar policy explicitly forbids sharing.
+- **NovaTrial CRO:** Seeded dynamically via an API script that pulls **real Phase 2 Oncology clinical trials** directly from ClinicalTrials.gov. Their Cedar policy allows sharing summary views but hard-blocks the raw API responses and IP methodology.
+
+## Getting Started
+
+*(Note: The implementation of these scripts is pending the next phase of development with Devin).*
+
+1. Ensure Docker, Python 3, and OpenSSL are installed.
+2. Make scripts executable: `chmod +x scripts/*.sh`
+3. Run the bootstrap sequence: `bash scripts/bootstrap_all.sh`
+
+This will generate UUIDs, create X.509 certificates, fetch live clinical data, and spin up all three Docker Compose environments.
+
+## Core Schema Files
+
+If you are looking for the canonical machine-readable contracts generated from the PACT Product Specification, they are included at the root:
+- `pact_v1.proto` (Hot-path gRPC contract)
+- `pact_openapi.yaml` (REST control-plane surface)
+- `pact_schema.sql` (Control-plane database DDL)
