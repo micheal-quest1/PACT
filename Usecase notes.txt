@@ -1,0 +1,18 @@
+1. Meridian Legal LLP (The Law Firm)
+Domain: meridian-legal.ai (Think of a domain just like a website or email address. If Sarah works here, her email is sarah@meridian-legal.ai).
+What they do: They are a high-end corporate law firm. Their specialty is helping big companies buy other companies (this is called Mergers & Acquisitions, or M&A).
+Their AI Agent: They use an AI called Harvey to help their lawyers read thousands of legal documents quickly.
+Example of what they do: Imagine a massive pharmaceutical company (let's call them BigPharma) wants to buy a smaller research company for $500 Million. BigPharma hires Meridian Legal to investigate the smaller company before handing over the money. Meridian's job is to look for legal risks, bad contracts, or fake research. This investigation process is called "Due Diligence". Meridian uses their AI (Harvey) to do this investigating.
+
+2. NovaTrial CRO (The Research Company)
+Domain: novatrial.io (If Dr. Elena works here, her email is dr.elena@novatrial.io).
+What they do: They are a "Contract Research Organisation" (CRO). Pharmaceutical companies hire them to run clinical trials on actual human patients to see if new drugs work and are safe.
+Their AI Agent: They use an AI called Atlas to manage their massive databases of clinical trial results and patient health records.
+Example of what they do: NovaTrial is currently running 10 different clinical trials for cancer drugs. They have thousands of highly sensitive patient medical records, proprietary scientific methods, and patents. NovaTrial is the company that BigPharma wants to buy for $500 Million.
+
+The Problem They Have (Why PACT is needed)
+Because BigPharma wants to buy NovaTrial, Meridian Legal (the lawyers) needs to look at NovaTrial's (the researchers) data to make sure it's legitimate.
+
+Meridian says: "Our AI (Harvey) needs to connect to your database to read all your clinical trial results."
+NovaTrial says: "Absolutely not! We have highly illegal-to-share patient medical records in there, and top-secret scientific methods. Your AI might accidentally steal or read things it shouldn't."
+The Solution: They use PACT. PACT sits in the middle. When Meridian's AI (Harvey) tries to ask a question like "Show me the results of the prostate cancer trial," PACT stops the question. PACT checks NovaTrial's rules. NovaTrial's rule says "You can share the summary of the trial, but you CANNOT share the raw patient data." PACT enforces this rule instantly, so the lawyers get the summary they need to approve the $500M deal, and the researchers keep their patient data safe.

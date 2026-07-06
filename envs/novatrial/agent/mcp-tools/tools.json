@@ -1,0 +1,75 @@
+{
+  "_comment": "Atlas's MCP Tool Manifest — what tools NovaTrial exposes to PACT sessions",
+  "tool_manifest_version": "1.0",
+  "agent": "atlas",
+  "org": "novatrial.io",
+  "tools": [
+    {
+      "tool_name": "get_approved_dd_summary",
+      "description": "Return the approved due diligence summary for a specific trial. Only summaries marked approved_for_dd=true are accessible. Raw trial data is NEVER returned.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["search"],
+      "parameters": {
+        "nct_id": {"type": "string", "required": true, "description": "The NCT identifier (e.g. NCT02076503)"}
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true,
+      "data_wall_note": "Returns dd_approved_summary only. clinical_trial.raw_api_response is excluded by query."
+    },
+    {
+      "tool_name": "search_trial_portfolio",
+      "description": "Search NovaTrial's approved DD portfolio by condition, phase, or status. Returns summary-level data only.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["search"],
+      "parameters": {
+        "condition": {"type": "string", "required": false},
+        "phase": {
+          "type": "string",
+          "enum": ["PHASE1", "PHASE2", "PHASE3", "PHASE4"],
+          "required": false
+        },
+        "status": {"type": "string", "required": false},
+        "max_results": {"type": "integer", "default": 10}
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true
+    },
+    {
+      "tool_name": "aggregate_portfolio_stats",
+      "description": "Return aggregate statistics across the approved trial portfolio. group_size >= 5 enforced by Cedar. No individual patient data.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["aggregate"],
+      "parameters": {
+        "group_by": {
+          "type": "string",
+          "enum": ["phase", "condition", "status", "geography"],
+          "required": true
+        },
+        "group_size": {
+          "type": "integer",
+          "minimum": 5,
+          "required": true,
+          "description": "Cedar policy requires group_size >= 5 (k-anonymity)"
+        }
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true
+    },
+    {
+      "tool_name": "check_ip_existence",
+      "description": "Confirm whether NovaTrial holds IP (patents, trade secrets) in a given technology area. Returns existence only — no methodology details. IP_PROTECTED content is excluded.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["aggregate"],
+      "parameters": {
+        "technology_area": {"type": "string", "required": true}
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true,
+      "data_wall_note": "Returns boolean + asset_type only. description and details are excluded by query."
+    }
+  ]
+}

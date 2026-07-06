@@ -1,0 +1,60 @@
+{
+  "_comment": "NovaTrial CRO — Atlas Agent Configuration. Populated by bootstrap_novatrial.sh.",
+  "tenant_id": "${NOVATRIAL_TENANT_ID}",
+  "org_name": "NovaTrial CRO",
+  "identity_domain": "novatrial.io",
+  "industry": "Life Sciences — Contract Research Organisation",
+  "description": "CRO specialising in Phase 1-3 oncology and rare disease trials",
+  "pact_plan": "enterprise",
+  "agent": {
+    "agent_id": "${NOVATRIAL_AGENT_ID}",
+    "name": "atlas",
+    "display_name": "Atlas — NovaTrial Research Intelligence",
+    "protocol": "mcp",
+    "model_version": "claude-3-5-sonnet-20241022",
+    "cert_path": "identity/atlas.crt",
+    "key_path": "identity/atlas.key",
+    "ca_cert_path": "identity/novatrial-ca.crt",
+    "policy_bundle": {
+      "policy_id": "${NOVATRIAL_POLICY_ID}",
+      "version": 1,
+      "file": "policies/novatrial_v1.cedar",
+      "bundle_hash": "${NOVATRIAL_POLICY_HASH}"
+    },
+    "capabilities": [
+      "query_internal_trial_portfolio",
+      "generate_dd_approved_summary",
+      "fetch_regulatory_filing_status",
+      "aggregate_trial_outcomes",
+      "check_ip_existence"
+    ],
+    "memory": {
+      "default_scope": "session",
+      "persistent_requires_explicit_permit": true
+    }
+  },
+  "data_store": {
+    "type": "postgres",
+    "host": "localhost",
+    "port": 5434,
+    "database": "novatrial_db",
+    "user": "novatrial_app"
+  },
+  "cache": {
+    "type": "redis",
+    "host": "localhost",
+    "port": 6381
+  },
+  "pact_platform": {
+    "gateway_endpoint": "${PACT_GATEWAY_ENDPOINT}",
+    "api_endpoint": "${PACT_API_ENDPOINT}",
+    "tenant_id": "${NOVATRIAL_TENANT_ID}"
+  },
+  "entitlements": {
+    "plan": "enterprise",
+    "audit_export_formats": ["hipaa", "eu_ai_act", "iso_42001"],
+    "memory_governor": true,
+    "max_session_duration_hours": 8,
+    "max_concurrent_sessions": 3
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "_comment": "Meridian Legal LLP — Harvey Agent Configuration. Populated by bootstrap_meridian.sh.",
+  "tenant_id": "${MERIDIAN_TENANT_ID}",
+  "org_name": "Meridian Legal LLP",
+  "identity_domain": "meridian-legal.ai",
+  "industry": "Legal — M&A / Corporate Law (AmLaw 200)",
+  "description": "M&A law firm specialising in pharma and life sciences acquisitions. Microsoft enterprise stack.",
+  "pact_plan": "enterprise",
+  "agent": {
+    "agent_id": "${MERIDIAN_AGENT_ID}",
+    "name": "harvey",
+    "display_name": "Harvey — Meridian Legal Intelligence",
+    "protocol": "mcp",
+    "model_version": "gpt-4o-2024-11-20",
+    "cert_path": "identity/harvey.crt",
+    "key_path": "identity/harvey.key",
+    "ca_cert_path": "identity/meridian-ca.crt",
+    "policy_bundle": {
+      "policy_id": "${MERIDIAN_POLICY_ID}",
+      "version": 1,
+      "file": "policies/meridian_v1.cedar",
+      "bundle_hash": "${MERIDIAN_POLICY_HASH}"
+    },
+    "capabilities": [
+      "search_dd_materials",
+      "aggregate_trial_data",
+      "analyze_regulatory_status",
+      "review_nda",
+      "generate_dd_summary"
+    ],
+    "memory": {
+      "default_scope": "session",
+      "persistent_requires_explicit_permit": true
+    }
+  },
+  "data_store": {
+    "type": "sqlserver",
+    "driver": "mssql",
+    "host": "localhost",
+    "port": 1433,
+    "database": "meridian_db",
+    "user": "sa",
+    "trust_server_certificate": true,
+    "_note": "Microsoft SQL Server 2022. Law firms run Microsoft enterprise stack."
+  },
+  "cache": {
+    "type": "redis",
+    "host": "localhost",
+    "port": 6380
+  },
+  "pact_platform": {
+    "gateway_endpoint": "${PACT_GATEWAY_ENDPOINT}",
+    "api_endpoint": "${PACT_API_ENDPOINT}",
+    "tenant_id": "${MERIDIAN_TENANT_ID}"
+  },
+  "entitlements": {
+    "plan": "enterprise",
+    "audit_export_formats": ["soc2", "eu_ai_act", "gdpr"],
+    "memory_governor": true,
+    "max_session_duration_hours": 8,
+    "max_concurrent_sessions": 3
+  }
+}

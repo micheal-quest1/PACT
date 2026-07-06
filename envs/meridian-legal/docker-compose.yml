@@ -1,0 +1,86 @@
+version: "3.9"
+
+# =============================================================================
+# Meridian Legal LLP — Isolated Organisation Environment
+# =============================================================================
+# Stack: Microsoft SQL Server 2022 + Redis
+# Law firms run Microsoft enterprise stack — SQL Server is the natural choice.
+# NovaTrial runs PostgreSQL (open-source, research/CRO context).
+# This difference intentionally demonstrates PACT's stack-agnostic governance:
+# the MCP adapter normalises T-SQL and PG queries into the same Tool-Call Context.
+#
+# Ports: SQL Server:1433, Redis:6380
+# Network: meridian-net (fully isolated — no link to novatrial-net or pact-net)
+# =============================================================================
+
+networks:
+  meridian-net:
+    driver: bridge
+    name: meridian-net
+
+volumes:
+  meridian_sqlserver_data:
+    name: meridian_sqlserver_data
+  meridian_redis_data:
+    name: meridian_redis_data
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # SQL Server 2022 — Meridian Legal's Internal Database
+  # Holds: matters, deal room documents, DD checklist, privilege log
+  # PACT has NO direct access. Harvey (agent) accesses it; PACT governs Harvey.
+  # T-SQL schema in sqlserver/00_schema.sql
+  # ---------------------------------------------------------------------------
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: meridian-sqlserver
+    restart: unless-stopped
+    networks: [meridian-net]
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_PID: Developer   # Free developer edition (feature-complete)
+      MSSQL_COLLATION: SQL_Latin1_General_CP1_CI_AS
+    volumes:
+      - meridian_sqlserver_data:/var/opt/mssql
+      - ./sqlserver:/sqlserver-init:ro   # schema + seed scripts (run by bootstrap)
+    healthcheck:
+      test: >
+        CMD-SHELL /opt/mssql-tools18/bin/sqlcmd
+        -S localhost -U sa -P "$$MSSQL_SA_PASSWORD"
+        -C -Q "SELECT 1" -b || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s    # SQL Server takes ~20s to initialise
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — Meridian's Agent Session Cache
+  # Harvey's active session state, tool call results, short-term context.
+  # Port 6380 to avoid conflict with PACT platform Redis.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: meridian-redis
+    restart: unless-stopped
+    networks: [meridian-net]
+    ports:
+      - "6380:6379"
+    command: >
+      redis-server
+        --requirepass ${REDIS_PASSWORD}
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --save 900 1
+    volumes:
+      - meridian_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

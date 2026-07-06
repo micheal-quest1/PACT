@@ -1,0 +1,232 @@
+// =============================================================================
+//  PACT — Canonical Protocol Buffers Contract
+//  pact/v1/pact.proto
+//
+//  This is the machine-readable form of the data contracts defined in
+//  PACT Engineering Foundations §2 (Canonical Data Contracts) and §3 (API
+//  Surface). The Foundations document is the source of truth; this file
+//  formalizes it for the hot path. If a contract changes, it changes in
+//  Foundations first, then here.
+//
+//  Hot path (Gateway 01) is gRPC; this proto IS the schema referenced by
+//  Foundations §3 ("the proto IS the schema in §2.1").
+//
+//  Conventions (Foundations §9):
+//    - All field names match Foundations exactly.
+//    - Sanitization: any string crossing the org boundary (reason, summary)
+//      is sanitized of policy internals and other parties' data.
+//    - Fail-closed: see Decision combination notes below.
+// =============================================================================
+
+syntax = "proto3";
+
+package pact.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/pact/gen/pact/v1;pactv1";
+option java_multiple_files = true;
+option java_package = "ai.pact.v1";
+
+// -----------------------------------------------------------------------------
+//  ENUMS  (Foundations §2.1)
+// -----------------------------------------------------------------------------
+
+// ActionType — the kind of governed action. Foundations §2.1.
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;  // proto3 requires a zero value; invalid at runtime
+  DATA_QUERY              = 1;
+  DOC_RETRIEVAL           = 2;
+  API_ACTION              = 3;
+  DATA_WRITE              = 4;
+  A2A_DELEGATION          = 5;
+  MEMORY_WRITE            = 6;
+  MEMORY_READ             = 7;
+}
+
+// Protocol — the carrying protocol the action arrived on.
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  MCP                  = 1;
+  A2A                  = 2;
+  HUMAN_GATEWAY        = 3;
+}
+
+// Operation — the operation the action performs on its target.
+enum Operation {
+  OPERATION_UNSPECIFIED = 0;
+  READ                  = 1;
+  WRITE                 = 2;
+  SEARCH                = 3;
+  AGGREGATE             = 4;
+  DELEGATE              = 5;
+  PERSIST               = 6;
+}
+
+// Direction — inbound = pre-execution authorization;
+//             outbound = post-execution result check (data wall, memory-read).
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  INBOUND               = 1;
+  OUTBOUND              = 2;
+}
+
+// TrustLevel — current required assurance level within the session (Trust
+// Escalation Engine 04 may raise this).
+enum TrustLevel {
+  TRUST_LEVEL_UNSPECIFIED = 0;
+  BASELINE                = 1;
+  ELEVATED                = 2;
+}
+
+// Verdict — the decision outcome.
+enum Verdict {
+  VERDICT_UNSPECIFIED = 0;
+  ALLOW               = 1;
+  DENY                = 2;
+}
+
+// ObligationKind — a conditional-allow action the Gateway must enforce.
+enum ObligationKind {
+  OBLIGATION_KIND_UNSPECIFIED = 0;
+  REDACT                      = 1;  // remove/replace a field in the result
+  RESTRICT_AGGREGATION        = 2;  // forbid/limit aggregation
+  REQUIRE_LOG                 = 3;  // emit additional audit detail
+  // extensible: add kinds here; unknown kinds must fail-closed at the Gateway
+}
+
+// MemoryEffect — what a governed action did to memory (recorded in the audit
+// entry). Foundations §2.3.
+enum MemoryEffect {
+  MEMORY_EFFECT_UNSPECIFIED = 0;
+  NONE                      = 1;
+  SESSION_SCOPED            = 2;  // destroyed at teardown
+  PERSISTED                 = 3;  // retained; see persisted_permitted_by
+}
+
+// -----------------------------------------------------------------------------
+//  ACTION CONTEXT  (Foundations §2.1)
+//  The protocol-neutral object every governed action is normalized into.
+//  Produced by Protocol Adapters (07) or the SDK; consumed by the Gateway (01),
+//  every Policy Engine (02/03), and the Memory Governor (05).
+// -----------------------------------------------------------------------------
+
+message Action {
+  ActionType type      = 1;
+  Protocol   protocol  = 2;
+  string     target    = 3;  // ResourceId, e.g. "clickhouse:trials.cohort"
+  Operation  operation = 4;
+  google.protobuf.Struct parameters = 5;  // action-specific body (Map<String,Json>)
+  repeated string affects_parties    = 6;  // OrgIds whose policy MUST evaluate this
+}
+
+message ActionContext {
+  string   session_id  = 1;  // UUID
+  uint64   sequence_no = 2;  // monotonic within session; authoritative for ordering
+  google.protobuf.Timestamp timestamp = 3;  // RFC3339 nanos
+  repeated string parties = 4;   // all session participants (OrgIds)
+  string   acting_party = 5;     // OrgId attempting the action
+  string   agent_id     = 6;     // verified agent id, or "proxy:web"
+  Action   action       = 7;
+  Direction  direction   = 8;
+  TrustLevel trust_level = 9;
+  string   payload_summary  = 10; // sanitized, for audit
+  string   constitution_ref = 11; // hash of the governing Session Constitution
+  // Optional; present for delegated actions. Ordered origin -> current.
+  // Single-hop today carries at most one hop. Reserved for the multi-hop
+  // delegation phase (Protocol Adapters 07 §4a): monotonic scope attenuation,
+  // chain provenance, chain-consistent audit. Components ignore until built.
+  repeated DelegationHop delegation_chain = 12;
+}
+
+// DelegationHop — one hop of a (possibly multi-hop) cross-org delegation chain.
+// Reserved for the multi-hop delegation phase; see Foundations §2.1 and
+// Protocol Adapters 07 §4a. Privileges may only narrow across hops.
+message DelegationHop {
+  string from_party    = 1;  // OrgId delegating
+  string to_party      = 2;  // OrgId receiving the delegation
+  string granted_scope = 3;  // scope granted at this hop (<= upstream scope)
+  string authz_proof   = 4;  // cryptographic proof authorizing this hop
+}
+
+// -----------------------------------------------------------------------------
+//  DECISION  (Foundations §2.2)
+//  Returned by each Policy Engine; combined by the Gateway.
+//
+//  COMBINATION (invariant, enforced by Gateway 01):
+//    final = ALLOW  iff  for every P in affects_parties: decision[P] == ALLOW
+//    obligations = union of obligations across all ALLOW decisions
+//    any DENY, error, or timeout from any invoked party => final DENY
+//    (fail-closed). Combination MUST be constant-time and symmetric-denial
+//    (Foundations I2/I3): time-to-result and surfaced content must not reveal
+//    which party denied or which rule fired.
+// -----------------------------------------------------------------------------
+
+message Obligation {
+  ObligationKind kind   = 1;
+  string         target = 2;  // e.g. the field to redact
+  google.protobuf.Struct params = 3;
+}
+
+message Decision {
+  Verdict  decision     = 1;
+  string   evaluated_by = 2;  // OrgId whose engine produced this
+  string   policy_rule  = 3;  // RuleId — AUDIT ONLY; never surfaced to other parties
+  string   reason       = 4;  // SANITIZED rationale; never reveals full policy
+  repeated Obligation obligations = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+// -----------------------------------------------------------------------------
+//  AUDIT ENTRY  (Foundations §2.3)
+//  One per action. Append-only, hash-chained, signed. Written by Audit
+//  Writer (08). entry_hash = sha256(prev_hash + canonical(body)), using the
+//  canonical serialization in Foundations §5.
+// -----------------------------------------------------------------------------
+
+message Signature {
+  string signer    = 1;  // "governance-plane" or an OrgId (counter-signature)
+  bytes  signature = 2;
+  string key_id    = 3;
+}
+
+message AuditEntry {
+  string  entry_hash = 1;  // sha256(prev_hash + canonical(body))
+  string  prev_hash  = 2;  // previous entry's hash (chain link)
+  string  session_id = 3;  // UUID
+  uint64  sequence_no = 4;
+  ActionContext action = 5;            // sanitized
+  repeated Decision decisions = 6;     // every invoked party's decision
+  Verdict final_decision = 7;
+  repeated Obligation obligations_applied = 8;
+  bool    executed = 9;
+  MemoryEffect memory_effect = 10;
+  string  persisted_permitted_by = 11; // Ref; set only when memory_effect=PERSISTED
+  google.protobuf.Timestamp timestamp = 12;
+  repeated Signature signatures = 13;
+}
+
+// -----------------------------------------------------------------------------
+//  HOT-PATH SERVICE — Enforcement Gateway (01), Foundations §3
+// -----------------------------------------------------------------------------
+
+service EnforcementGateway {
+  // Evaluate a single governed action. Returns the combined Decision
+  // (ALLOW iff all invoked parties ALLOW; fail-closed otherwise).
+  rpc EvaluateAction(ActionContext) returns (Decision);
+
+  // Long-lived per-session channel for high-rate sessions: a stream of
+  // ActionContexts in, a stream of Decisions out, preserving sequence_no order.
+  rpc StreamSession(stream ActionContext) returns (stream Decision);
+}
+
+// -----------------------------------------------------------------------------
+//  INTERNAL SERVICE — Policy Engine (02) and Proxy Policy Engine (03)
+//  Called by the Gateway, in-enclave. Returns this party's Decision only.
+//  Policy rules and entity data never leave the enclave (Foundations I1).
+// -----------------------------------------------------------------------------
+
+service PolicyEngine {
+  rpc EvaluatePolicy(ActionContext) returns (Decision);
+}

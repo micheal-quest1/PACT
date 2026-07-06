@@ -1,0 +1,629 @@
+openapi: 3.1.0
+info:
+  title: PACT Control-Plane API
+  version: "1.0.0"
+  description: >
+    The PACT REST management surface, exposed by the Admin Console & API (14).
+    This is the machine-readable form of the API Surface in PACT Engineering
+    Foundations §3 (and Product Spec §20). The Foundations document is the
+    source of truth; this spec formalizes the REST surface.
+
+    The hot path (action evaluation) is gRPC, not REST — see pact_v1.proto
+    (EnforcementGateway.EvaluateAction / StreamSession). This spec covers the
+    control-plane and audit/compliance surface only.
+
+    Conventions (Foundations §3, §9):
+      - All endpoints are versioned under /v1.
+      - All calls are mTLS-authenticated.
+      - Errors follow the taxonomy in Foundations §4 (see ErrorEnvelope).
+      - Sanitization: no policy internals or other parties' data in any
+        response or error, ever.
+servers:
+  - url: https://{region}.api.pact.ai
+    variables:
+      region:
+        default: us
+        enum: [us, eu]
+        description: Regional data plane; session data and audit pin to region.
+
+security:
+  - mutualTLS: []
+
+tags:
+  - name: Sessions
+    description: Session lifecycle — owned by Session Orchestrator (10).
+  - name: Policies
+    description: Cedar policy authoring/registry — owned by Policy Authoring & Registry (12).
+  - name: Audit
+    description: Audit views, compliance export, inclusion proofs — owned by Audit Writer (08).
+  - name: Tenants
+    description: Tenants and members — owned by Tenant & Org Management (09).
+  - name: Billing
+    description: Usage metering — owned by Billing & Metering (15).
+
+paths:
+  # ---------------------------------------------------------------------------
+  # SESSIONS  (Orchestrator 10)
+  # ---------------------------------------------------------------------------
+  /v1/sessions:
+    post:
+      tags: [Sessions]
+      summary: Create a session from a Constitution
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [constitution_ref]
+              properties:
+                constitution_ref:
+                  type: string
+                  description: Hash of the agreed, active Session Constitution.
+      responses:
+        "201":
+          description: Session created (state=initiating).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    get:
+      tags: [Sessions]
+      summary: Get session state
+      operationId: getSession
+      responses:
+        "200":
+          description: Current session state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{id}/participants:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    post:
+      tags: [Sessions]
+      summary: Register a participant (with identity / attestation)
+      operationId: registerParticipant
+      description: >
+        Registers a party and presents its agent identity certificate (or, in
+        asymmetric mode, marks it as joining via the Human Gateway). No data
+        flows until all participants are verified (Foundations I-rule: identity
+        before data).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ParticipantRegistration" }
+      responses:
+        "200":
+          description: Participant registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionParticipant" }
+        "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{id}/activate:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    post:
+      tags: [Sessions]
+      summary: Activate the session
+      operationId: activateSession
+      description: >
+        Activates once every participant's identity and enclave attestation
+        verify against the Constitution. Fails closed if any verification is
+        missing or fails.
+      responses:
+        "200":
+          description: Session activated (state=active).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{id}/suspend:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    post:
+      tags: [Sessions]
+      summary: Suspend the session (drift / manual)
+      operationId: suspendSession
+      responses:
+        "200":
+          description: Session suspended.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+
+  /v1/sessions/{id}/close:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    post:
+      tags: [Sessions]
+      summary: Close the session
+      operationId: closeSession
+      description: >
+        Closes the session, triggering memory teardown (Memory Governor 05)
+        and final audit sealing (Audit Writer 08).
+      responses:
+        "200":
+          description: Session closed and sealed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+
+  /v1/sessions/{id}/audit:
+    parameters:
+      - { $ref: "#/components/parameters/SessionId" }
+    get:
+      tags: [Audit]
+      summary: This tenant's audit view for the session
+      operationId: getSessionAudit
+      description: >
+        Returns the calling tenant's audit view only. The unified log is
+        partitioned by tenant (Foundations I5); a caller never sees another
+        party's policy internals.
+      responses:
+        "200":
+          description: Audit entries visible to this tenant.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  # ---------------------------------------------------------------------------
+  # POLICIES  (Policy Authoring & Registry 12; simulate -> Simulator 18)
+  # ---------------------------------------------------------------------------
+  /v1/policies:
+    post:
+      tags: [Policies]
+      summary: Publish a versioned Cedar policy bundle
+      operationId: publishPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cedar_source]
+              properties:
+                cedar_source:
+                  type: string
+                  description: Cedar policy source (bundle).
+      responses:
+        "201":
+          description: Bundle published; returns version and hash.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyBundle" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /v1/policies/simulate:
+    post:
+      tags: [Policies]
+      summary: Test a draft policy against sample Action Contexts
+      operationId: simulatePolicy
+      description: >
+        Evaluates a draft Cedar policy against sample Action Contexts before
+        publishing (Policy Simulator 18). Never affects live sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cedar_source, samples]
+              properties:
+                cedar_source: { type: string }
+                samples:
+                  type: array
+                  items: { $ref: "#/components/schemas/ActionContext" }
+      responses:
+        "200":
+          description: Per-sample decisions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Decision" }
+
+  /v1/policies/{policy_id}/versions:
+    parameters:
+      - name: policy_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Policies]
+      summary: List versions of a policy
+      operationId: listPolicyVersions
+      responses:
+        "200":
+          description: Versions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PolicyBundle" }
+
+  # ---------------------------------------------------------------------------
+  # AUDIT & COMPLIANCE  (Audit Writer 08)
+  # ---------------------------------------------------------------------------
+  /v1/audit/export:
+    get:
+      tags: [Audit]
+      summary: Per-tenant compliance export
+      operationId: exportAudit
+      parameters:
+        - name: framework
+          in: query
+          schema:
+            type: string
+            enum: [eu_ai_act, iso_42001, nist_ai_rmf, soc2, hipaa, gdpr]
+          description: Shapes the export to a compliance framework.
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Compliance-shaped export for the calling tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  framework: { type: string }
+                  entries:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEntry" }
+
+  /v1/audit/verify/{entry}:
+    parameters:
+      - name: entry
+        in: path
+        required: true
+        schema: { type: string }
+        description: entry_hash to verify.
+    get:
+      tags: [Audit]
+      summary: Transparency-log inclusion proof
+      operationId: verifyAuditEntry
+      responses:
+        "200":
+          description: Inclusion proof for the entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InclusionProof" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  # ---------------------------------------------------------------------------
+  # TENANTS  (Tenant & Org Management 09)
+  # ---------------------------------------------------------------------------
+  /v1/tenants:
+    post:
+      tags: [Tenants]
+      summary: Create a tenant (organization)
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                region: { type: string, enum: [us, eu] }
+      responses:
+        "201":
+          description: Tenant created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+
+  /v1/tenants/{id}/members:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Tenants]
+      summary: Add a member to a tenant
+      operationId: addMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Member" }
+      responses:
+        "201":
+          description: Member added.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Member" }
+
+  # ---------------------------------------------------------------------------
+  # BILLING  (Billing & Metering 15)
+  # ---------------------------------------------------------------------------
+  /v1/billing/usage:
+    get:
+      tags: [Billing]
+      summary: Per-tenant usage
+      operationId: getUsage
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, description: "e.g. 2026-06" }
+      responses:
+        "200":
+          description: Usage records for the calling tenant.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BillingRecord" }
+
+# =============================================================================
+#  COMPONENTS
+# =============================================================================
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+      description: All API calls are mTLS-authenticated (Foundations §3).
+
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Error:
+      description: Error envelope (Foundations §4). Message is sanitized.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  schemas:
+    # --- Error taxonomy (Foundations §4) -----------------------------------
+    ErrorEnvelope:
+      type: object
+      required: [error_class, message, retryable]
+      properties:
+        error_class:
+          type: string
+          description: >
+            One of the Foundations §4 error classes. POLICY_DENY is the
+            expected negative path, not a fault.
+          enum:
+            - POLICY_DENY
+            - EVAL_TIMEOUT
+            - EVAL_ERROR
+            - ATTEST_FAIL
+            - AUDIT_FAIL
+            - UNREACHABLE
+            - INVALID_CONTEXT
+        message:
+          type: string
+          description: Sanitized — no policy internals, no other party's data.
+        session_id:
+          type: string
+          format: uuid
+        sequence_no:
+          type: integer
+          format: int64
+        retryable:
+          type: boolean
+
+    # --- Enums (mirror pact_v1.proto / Foundations §2.1) -------------------
+    ActionType:
+      type: string
+      enum: [data_query, doc_retrieval, api_action, data_write, a2a_delegation, memory_write, memory_read]
+    Protocol:
+      type: string
+      enum: [mcp, a2a, human_gateway]
+    Operation:
+      type: string
+      enum: [read, write, search, aggregate, delegate, persist]
+    Direction:
+      type: string
+      enum: [inbound, outbound]
+    TrustLevel:
+      type: string
+      enum: [baseline, elevated]
+    Verdict:
+      type: string
+      enum: [ALLOW, DENY]
+
+    # --- Core contracts (Foundations §2) -----------------------------------
+    Action:
+      type: object
+      properties:
+        type: { $ref: "#/components/schemas/ActionType" }
+        protocol: { $ref: "#/components/schemas/Protocol" }
+        target: { type: string, description: "ResourceId, e.g. clickhouse:trials.cohort" }
+        operation: { $ref: "#/components/schemas/Operation" }
+        parameters: { type: object, additionalProperties: true }
+        affects_parties:
+          type: array
+          items: { type: string }
+          description: OrgIds whose policy MUST evaluate this action.
+
+    ActionContext:
+      type: object
+      required: [session_id, sequence_no, acting_party, action, direction, constitution_ref]
+      properties:
+        session_id: { type: string, format: uuid }
+        sequence_no: { type: integer, format: int64, description: "Monotonic within session; authoritative for ordering." }
+        timestamp: { type: string, format: date-time }
+        parties: { type: array, items: { type: string } }
+        acting_party: { type: string }
+        agent_id: { type: string, description: 'Verified agent id, or "proxy:web".' }
+        action: { $ref: "#/components/schemas/Action" }
+        direction: { $ref: "#/components/schemas/Direction" }
+        trust_level: { $ref: "#/components/schemas/TrustLevel" }
+        payload_summary: { type: string, description: "Sanitized, for audit." }
+        constitution_ref: { type: string, description: "Hash of the governing Constitution." }
+        delegation_chain:
+          type: array
+          description: >-
+            Optional; present for delegated actions. Ordered origin -> current.
+            Single-hop today carries at most one hop. Reserved for the multi-hop
+            delegation phase (Protocol Adapters 07 §4a): monotonic scope
+            attenuation, chain provenance, chain-consistent audit.
+          items: { $ref: "#/components/schemas/DelegationHop" }
+
+    DelegationHop:
+      type: object
+      description: >-
+        One hop of a (possibly multi-hop) cross-org delegation chain. Reserved
+        for the multi-hop delegation phase. Privileges may only narrow across hops.
+      required: [from_party, to_party]
+      properties:
+        from_party: { type: string, description: "OrgId delegating." }
+        to_party: { type: string, description: "OrgId receiving the delegation." }
+        granted_scope: { type: string, description: "Scope granted at this hop (<= upstream scope)." }
+        authz_proof: { type: string, description: "Cryptographic proof authorizing this hop." }
+
+    Obligation:
+      type: object
+      properties:
+        kind: { type: string, enum: [redact, restrict_aggregation, require_log] }
+        target: { type: string }
+        params: { type: object, additionalProperties: true }
+
+    Decision:
+      type: object
+      required: [decision, evaluated_by]
+      properties:
+        decision: { $ref: "#/components/schemas/Verdict" }
+        evaluated_by: { type: string, description: "OrgId whose engine produced this." }
+        policy_rule: { type: string, description: "Audit only; never surfaced to other parties." }
+        reason: { type: string, description: "Sanitized rationale." }
+        obligations:
+          type: array
+          items: { $ref: "#/components/schemas/Obligation" }
+        timestamp: { type: string, format: date-time }
+
+    AuditEntry:
+      type: object
+      properties:
+        entry_hash: { type: string, description: "sha256(prev_hash + canonical(body))." }
+        prev_hash: { type: string }
+        session_id: { type: string, format: uuid }
+        sequence_no: { type: integer, format: int64 }
+        action: { $ref: "#/components/schemas/ActionContext" }
+        decisions:
+          type: array
+          items: { $ref: "#/components/schemas/Decision" }
+        final_decision: { $ref: "#/components/schemas/Verdict" }
+        obligations_applied:
+          type: array
+          items: { $ref: "#/components/schemas/Obligation" }
+        executed: { type: boolean }
+        memory_effect: { type: string, enum: [none, session_scoped, persisted] }
+        persisted_permitted_by: { type: string }
+        timestamp: { type: string, format: date-time }
+        signatures:
+          type: array
+          items:
+            type: object
+            properties:
+              signer: { type: string }
+              key_id: { type: string }
+
+    InclusionProof:
+      type: object
+      properties:
+        entry_hash: { type: string }
+        log_root: { type: string }
+        audit_path:
+          type: array
+          items: { type: string }
+        verified: { type: boolean }
+
+    # --- Control-plane entities (Product Spec §10.1) -----------------------
+    Tenant:
+      type: object
+      properties:
+        tenant_id: { type: string }
+        name: { type: string }
+        identity_domain: { type: string }
+        entitlements: { type: object, additionalProperties: true }
+        region: { type: string, enum: [us, eu] }
+
+    Member:
+      type: object
+      properties:
+        member_id: { type: string }
+        tenant_id: { type: string }
+        role: { type: string }
+        idp_subject: { type: string }
+
+    PolicyBundle:
+      type: object
+      properties:
+        policy_id: { type: string }
+        tenant_id: { type: string }
+        version: { type: integer }
+        bundle_hash: { type: string }
+        published_at: { type: string, format: date-time }
+
+    ParticipantRegistration:
+      type: object
+      required: [tenant_id, mode]
+      properties:
+        tenant_id: { type: string }
+        mode: { type: string, enum: [bilateral, proxy] }
+        agent_identity_cert:
+          type: string
+          description: PEM X.509 agent identity cert; omitted for proxy (Human Gateway) mode.
+
+    SessionParticipant:
+      type: object
+      properties:
+        session_id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        mode: { type: string, enum: [bilateral, proxy] }
+        attestation_ref: { type: string }
+        joined_at: { type: string, format: date-time }
+
+    Session:
+      type: object
+      properties:
+        session_id: { type: string, format: uuid }
+        constitution_ref: { type: string }
+        state: { type: string, enum: [initiating, active, suspended, closed] }
+        participants:
+          type: array
+          items: { $ref: "#/components/schemas/SessionParticipant" }
+        region: { type: string, enum: [us, eu] }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+
+    BillingRecord:
+      type: object
+      properties:
+        record_id: { type: string }
+        tenant_id: { type: string }
+        session_id: { type: string, format: uuid }
+        metered_units: { type: object, additionalProperties: true }
+        period: { type: string }

@@ -1,0 +1,70 @@
+{
+  "_comment": "Harvey's MCP Tool Manifest — what tools Harvey exposes to PACT sessions",
+  "tool_manifest_version": "1.0",
+  "agent": "harvey",
+  "org": "meridian-legal.ai",
+  "tools": [
+    {
+      "tool_name": "search_dd_materials",
+      "description": "Search NovaTrial's approved due diligence summaries by keyword, trial phase, or condition.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["search"],
+      "parameters": {
+        "query": {"type": "string", "required": true},
+        "filter_phase": {"type": "string", "required": false},
+        "filter_condition": {"type": "string", "required": false},
+        "max_results": {"type": "integer", "default": 10}
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true
+    },
+    {
+      "tool_name": "aggregate_trial_outcomes",
+      "description": "Aggregate clinical trial outcomes across NovaTrial's approved DD portfolio. Minimum group_size=5 enforced by Cedar policy.",
+      "action_type": "data_query",
+      "resource_prefix": "novatrial:approved-for-dd",
+      "permitted_operations": ["aggregate"],
+      "parameters": {
+        "analysis_type": {
+          "type": "string",
+          "required": true,
+          "enum": ["regulatory_gap_analysis", "trial_completeness_check",
+                   "adverse_event_summary", "ip_existence_check"]
+        },
+        "trial_ids": {"type": "array", "items": "string", "required": false},
+        "group_size": {"type": "integer", "minimum": 5, "required": true}
+      },
+      "cedar_action": "Action::\"data_query\"",
+      "requires_pact_session": true
+    },
+    {
+      "tool_name": "read_meridian_document",
+      "description": "Read a Meridian Legal deal room document. Only non-privileged documents are accessible in cross-org sessions.",
+      "action_type": "doc_retrieval",
+      "resource_prefix": "meridian:deal-room",
+      "permitted_operations": ["read"],
+      "parameters": {
+        "document_id": {"type": "string", "required": true},
+        "document_type": {
+          "type": "string",
+          "enum": ["nda", "dd_checklist", "term_sheet"]
+        }
+      },
+      "cedar_action": "Action::\"doc_retrieval\"",
+      "requires_pact_session": false
+    },
+    {
+      "tool_name": "get_dd_checklist",
+      "description": "Retrieve the active due diligence checklist for the NovaTrial acquisition matter.",
+      "action_type": "doc_retrieval",
+      "resource_prefix": "meridian:due-diligence",
+      "permitted_operations": ["read"],
+      "parameters": {
+        "matter_id": {"type": "string", "required": true}
+      },
+      "cedar_action": "Action::\"doc_retrieval\"",
+      "requires_pact_session": false
+    }
+  ]
+}
